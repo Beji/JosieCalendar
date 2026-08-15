@@ -10,6 +10,9 @@ on:
 jobs:
   build-windows:
     runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: JosieCalendar
     steps:
       - uses: actions/checkout@v4
 
@@ -31,8 +34,8 @@ jobs:
         with:
           name: JosieCalendar-windows
           path: |
-            src-tauri/target/release/bundle/msi/*.msi
-            src-tauri/target/release/bundle/nsis/*.exe
+            JosieCalendar/src-tauri/target/release/bundle/msi/*.msi
+            JosieCalendar/src-tauri/target/release/bundle/nsis/*.exe
 
       # Only on version tags (e.g. v0.1.0): also publish a GitHub Release
       - name: Publish GitHub Release
@@ -41,6 +44,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          projectPath: JosieCalendar
           tagName: ${{ github.ref_name }}
           releaseName: 'JosieCalendar ${{ github.ref_name }}'
           releaseDraft: true
