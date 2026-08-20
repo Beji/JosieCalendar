@@ -127,13 +127,18 @@ const bankEvents = computed(() => {
   return events.value.filter((event) => !event.date)
 })
 
-// --- Create event form ---
+// --- Create / edit event form ---
+const DEFAULT_COLOR = '#3182ce'
+
 const showForm = ref(false)
 const formCell = ref(null)
 const formIsBank = ref(false)
+const formEditingId = ref(null)
 const formTitle = ref('')
+const formColor = ref(DEFAULT_COLOR)
 const formStart = ref('')
 const formEnd = ref('')
+const formQuantity = ref(1)
 
 const formMonthName = computed(() => {
   if (!formCell.value) return ''
@@ -142,21 +147,39 @@ const formMonthName = computed(() => {
   })
 })
 
+const resetFormFields = () => {
+  formTitle.value = ''
+  formColor.value = DEFAULT_COLOR
+  formStart.value = ''
+  formEnd.value = ''
+  formQuantity.value = 1
+}
+
 const openCreateForm = (cell) => {
   formCell.value = cell
   formIsBank.value = false
-  formTitle.value = ''
-  formStart.value = ''
-  formEnd.value = ''
+  formEditingId.value = null
+  resetFormFields()
   showForm.value = true
 }
 
 const openBankForm = () => {
   formCell.value = null
   formIsBank.value = true
-  formTitle.value = ''
-  formStart.value = ''
-  formEnd.value = ''
+  formEditingId.value = null
+  resetFormFields()
+  showForm.value = true
+}
+
+const openEditForm = (event) => {
+  formCell.value = null
+  formIsBank.value = !event.date
+  formEditingId.value = event.id
+  formTitle.value = event.title
+  formColor.value = event.color || DEFAULT_COLOR
+  formStart.value = event.start
+  formEnd.value = event.end
+  formQuantity.value = 1
   showForm.value = true
 }
 
@@ -164,19 +187,63 @@ const closeForm = () => {
   showForm.value = false
   formCell.value = null
   formIsBank.value = false
+  formEditingId.value = null
 }
 
 const saveEvent = () => {
   if (!formTitle.value.trim()) return
+
+  if (formEditingId.value !== null) {
+    const event = events.value.find((e) => e.id === formEditingId.value)
+    if (event) {
+      event.title = formTitle.value.trim()
+      event.color = formColor.value
+      event.start = formStart.value
+      event.end = formEnd.value
+    }
+    closeForm()
+    return
+  }
+
   if (!formIsBank.value && !formCell.value) return
-  events.value.push({
-    id: nextEventId++,
-    title: formTitle.value.trim(),
-    date: formIsBank.value ? null : dateKey(formCell.value.year, formCell.value.month, formCell.value.day),
-    start: formStart.value,
-    end: formEnd.value,
-  })
+
+  const date = formIsBank.value
+    ? null
+    : dateKey(formCell.value.year, formCell.value.month, formCell.value.day)
+  const count = formIsBank.value ? Math.min(Math.max(Math.round(formQuantity.value) || 1, 1), 20) : 1
+
+  for (let i = 0; i < count; i++) {
+    events.value.push({
+      id: nextEventId++,
+      title: formTitle.value.trim(),
+      date,
+      start: formStart.value,
+      end: formEnd.value,
+      color: formColor.value,
+    })
+  }
   closeForm()
+}
+
+const deleteEvent = (id) => {
+  events.value = events.value.filter((e) => e.id !== id)
+}
+
+// --- Right-click context menu ---
+const contextMenu = ref({ visible: false, x: 0, y: 0, eventId: null })
+
+const openContextMenu = (event, domEvent) => {
+  domEvent.preventDefault()
+  contextMenu.value = { visible: true, x: domEvent.clientX, y: domEvent.clientY, eventId: event.id }
+}
+
+const closeContextMenu = () => {
+  contextMenu.value = { visible: false, x: 0, y: 0, eventId: null }
+}
+
+const deleteContextMenuEvent = () => {
+  if (contextMenu.value.eventId !== null) deleteEvent(contextMenu.value.eventId)
+  closeContextMenu()
 }
 
 // --- Drag and drop ---
@@ -230,8 +297,11 @@ const onDayDragOver = (domEvent) => {
             v-for="event in bankEvents"
             :key="event.id"
             class="event-item"
+            :style="{ background: event.color || '#3182ce' }"
             draggable="true"
             @dragstart="onEventDragStart(event, $event)"
+            @click="openEditForm(event)"
+            @contextmenu="openContextMenu(event, $event)"
           >
             <div class="event-title">{{ event.title }}</div>
             <div v-if="event.start || event.end" class="event-time">
@@ -265,8 +335,11 @@ const onDayDragOver = (domEvent) => {
                 v-for="event in eventsForDay(cell)"
                 :key="event.id"
                 class="event-item"
+                :style="{ background: event.color || '#3182ce' }"
                 draggable="true"
                 @dragstart="onEventDragStart(event, $event)"
+                @click="openEditForm(event)"
+                @contextmenu="openContextMenu(event, $event)"
               >
                 <div class="event-title">{{ event.title }}</div>
                 <div v-if="event.start || event.end" class="event-time">
@@ -281,10 +354,11 @@ const onDayDragOver = (domEvent) => {
       </div>
     </div>
 
-    <!-- Create Event Modal -->
+    <!-- Create / Edit Event Modal -->
     <div v-if="showForm" class="modal-overlay" @click.self="closeForm">
       <div class="modal">
-        <h3 v-if="formIsBank">New Event</h3>
+        <h3 v-if="formEditingId !== null">Edit Event</h3>
+        <h3 v-else-if="formIsBank">New Event</h3>
         <h3 v-else>New Event &mdash; {{ formMonthName }} {{ formCell?.day }}, {{ formCell?.year }}</h3>
         <input
           type="text"
@@ -293,12 +367,32 @@ const onDayDragOver = (domEvent) => {
           placeholder="Enter event title"
           @keyup.enter="saveEvent"
         />
+        <label class="color-field">
+          Color
+          <input type="color" v-model="formColor" class="color-input" />
+        </label>
         <input type="time" v-model="formStart" class="form-control" placeholder="Start time" />
         <input type="time" v-model="formEnd" class="form-control" placeholder="End time" />
+        <label v-if="formIsBank && formEditingId === null" class="quantity-field">
+          Number of events
+          <input type="number" v-model.number="formQuantity" class="form-control" min="1" max="20" />
+        </label>
         <div class="modal-actions">
           <button @click="closeForm">Cancel</button>
-          <button @click="saveEvent">Create Event</button>
+          <button @click="saveEvent">{{ formEditingId !== null ? 'Save Changes' : 'Create Event' }}</button>
         </div>
+      </div>
+    </div>
+
+    <!-- Event Context Menu -->
+    <div
+      v-if="contextMenu.visible"
+      class="context-menu-overlay"
+      @click="closeContextMenu"
+      @contextmenu.prevent="closeContextMenu"
+    >
+      <div class="context-menu" :style="{ top: contextMenu.y + 'px', left: contextMenu.x + 'px' }" @click.stop>
+        <button @click="deleteContextMenuEvent">Delete</button>
       </div>
     </div>
   </div>
@@ -400,7 +494,6 @@ const onDayDragOver = (domEvent) => {
   margin-top: 2px;
 }
 .event-item {
-  background: #3182ce;
   color: white;
   border-radius: 3px;
   padding: 2px 4px;
@@ -447,10 +540,56 @@ const onDayDragOver = (domEvent) => {
   border-radius: 4px;
   border: 1px solid #ccc;
 }
+.color-field, .quantity-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  gap: 0.5rem;
+}
+.color-input {
+  width: 48px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.quantity-field .form-control {
+  width: 70px;
+}
 .modal-actions {
   display: flex;
   justify-content: flex-end;
   gap: 0.5rem;
   margin-top: 0.5rem;
+}
+.context-menu-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+}
+.context-menu {
+  position: fixed;
+  background: white;
+  color: #222;
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+  min-width: 120px;
+}
+.context-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 12px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: #c0392b;
+}
+.context-menu button:hover {
+  background: #f4f4f4;
 }
 </style>
