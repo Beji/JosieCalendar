@@ -102,9 +102,15 @@ const eventsForDay = (cell) => {
   return eventsByDay.value[dateKey(cell.year, cell.month, cell.day)] || []
 }
 
+// Events not yet placed on a day
+const bankEvents = computed(() => {
+  return events.value.filter((event) => !event.date)
+})
+
 // --- Create event form ---
 const showForm = ref(false)
 const formCell = ref(null)
+const formIsBank = ref(false)
 const formTitle = ref('')
 const formStart = ref('')
 const formEnd = ref('')
@@ -118,6 +124,16 @@ const formMonthName = computed(() => {
 
 const openCreateForm = (cell) => {
   formCell.value = cell
+  formIsBank.value = false
+  formTitle.value = ''
+  formStart.value = ''
+  formEnd.value = ''
+  showForm.value = true
+}
+
+const openBankForm = () => {
+  formCell.value = null
+  formIsBank.value = true
   formTitle.value = ''
   formStart.value = ''
   formEnd.value = ''
@@ -127,14 +143,16 @@ const openCreateForm = (cell) => {
 const closeForm = () => {
   showForm.value = false
   formCell.value = null
+  formIsBank.value = false
 }
 
 const saveEvent = () => {
-  if (!formTitle.value.trim() || !formCell.value) return
+  if (!formTitle.value.trim()) return
+  if (!formIsBank.value && !formCell.value) return
   events.value.push({
     id: nextEventId++,
     title: formTitle.value.trim(),
-    date: dateKey(formCell.value.year, formCell.value.month, formCell.value.day),
+    date: formIsBank.value ? null : dateKey(formCell.value.year, formCell.value.month, formCell.value.day),
     start: formStart.value,
     end: formEnd.value,
   })
@@ -156,6 +174,15 @@ const onDayDrop = (cell, domEvent) => {
   }
 }
 
+const onBankDrop = (domEvent) => {
+  domEvent.preventDefault()
+  const id = Number(domEvent.dataTransfer.getData('text/plain'))
+  const event = events.value.find((e) => e.id === id)
+  if (event) {
+    event.date = null
+  }
+}
+
 const onDayDragOver = (domEvent) => {
   domEvent.preventDefault()
   domEvent.dataTransfer.dropEffect = 'move'
@@ -171,26 +198,16 @@ const onDayDragOver = (domEvent) => {
       <button @click="nextMonth">&gt;</button>
     </div>
 
-    <!-- Weekday Labels -->
-    <div class="weekdays">
-      <div v-for="day in weekdays" :key="day" class="weekday">{{ day }}</div>
-    </div>
-
-    <!-- Date Grid -->
-    <div class="grid">
-      <div
-        v-for="cell in calendarCells"
-        :key="`${cell.year}-${cell.month}-${cell.day}`"
-        class="day"
-        :class="{ today: isToday(cell), outside: !cell.inCurrentMonth }"
-        @dragover="onDayDragOver"
-        @drop="onDayDrop(cell, $event)"
-      >
-        <div class="day-number">{{ cell.day }}</div>
-
-        <div class="day-events">
+    <div class="body">
+      <!-- Event Bank -->
+      <div class="bank" @dragover="onDayDragOver" @drop="onBankDrop">
+        <div class="bank-header">
+          <h3>Event Bank</h3>
+          <button class="add-event-btn" @click="openBankForm">+</button>
+        </div>
+        <div class="bank-events">
           <div
-            v-for="event in eventsForDay(cell)"
+            v-for="event in bankEvents"
             :key="event.id"
             class="event-item"
             draggable="true"
@@ -202,15 +219,53 @@ const onDayDragOver = (domEvent) => {
             </div>
           </div>
         </div>
+      </div>
 
-        <button class="add-event-btn" @click="openCreateForm(cell)">+</button>
+      <!-- Main Calendar -->
+      <div class="main">
+        <!-- Weekday Labels -->
+        <div class="weekdays">
+          <div v-for="day in weekdays" :key="day" class="weekday">{{ day }}</div>
+        </div>
+
+        <!-- Date Grid -->
+        <div class="grid">
+          <div
+            v-for="cell in calendarCells"
+            :key="`${cell.year}-${cell.month}-${cell.day}`"
+            class="day"
+            :class="{ today: isToday(cell), outside: !cell.inCurrentMonth }"
+            @dragover="onDayDragOver"
+            @drop="onDayDrop(cell, $event)"
+          >
+            <div class="day-number">{{ cell.day }}</div>
+
+            <div class="day-events">
+              <div
+                v-for="event in eventsForDay(cell)"
+                :key="event.id"
+                class="event-item"
+                draggable="true"
+                @dragstart="onEventDragStart(event, $event)"
+              >
+                <div class="event-title">{{ event.title }}</div>
+                <div v-if="event.start || event.end" class="event-time">
+                  {{ event.start }}<span v-if="event.start && event.end"> - </span>{{ event.end }}
+                </div>
+              </div>
+            </div>
+
+            <button class="add-event-btn" @click="openCreateForm(cell)">+</button>
+          </div>
+        </div>
       </div>
     </div>
 
     <!-- Create Event Modal -->
     <div v-if="showForm" class="modal-overlay" @click.self="closeForm">
       <div class="modal">
-        <h3>New Event &mdash; {{ formMonthName }} {{ formCell?.day }}, {{ formCell?.year }}</h3>
+        <h3 v-if="formIsBank">New Event</h3>
+        <h3 v-else>New Event &mdash; {{ formMonthName }} {{ formCell?.day }}, {{ formCell?.year }}</h3>
         <input
           type="text"
           v-model="formTitle"
@@ -243,6 +298,44 @@ const onDayDragOver = (domEvent) => {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 1rem;
+}
+.body {
+  flex: 1;
+  display: flex;
+  gap: 1rem;
+  min-height: 0;
+}
+.bank {
+  width: 220px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: #eef2f7;
+  border-radius: 4px;
+  padding: 8px;
+  overflow-y: auto;
+}
+.bank-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.bank-header h3 {
+  font-size: 0.9rem;
+  margin: 0;
+}
+.bank-events {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
 }
 .weekdays, .grid {
   display: grid;
