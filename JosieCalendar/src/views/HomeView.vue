@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 
 const currentDate = ref(new Date())
 const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
@@ -81,9 +81,29 @@ const isToday = (cell) => {
   )
 }
 
-// --- Events ---
-let nextEventId = 1
-const events = ref([])
+// --- Events (persisted to localStorage so state survives app restarts) ---
+const STORAGE_KEY = 'josiecalendar.events'
+
+const loadEvents = () => {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    const parsed = raw ? JSON.parse(raw) : []
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+const events = ref(loadEvents())
+let nextEventId = events.value.reduce((max, event) => Math.max(max, event.id), 0) + 1
+
+watch(
+  events,
+  (value) => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(value))
+  },
+  { deep: true },
+)
 
 const dateKey = (y, m, day) => {
   return `${y}-${String(m + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
