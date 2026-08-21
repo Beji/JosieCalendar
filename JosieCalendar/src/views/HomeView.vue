@@ -328,7 +328,7 @@ const onDayDragOver = (domEvent) => {
             @dragover="onDayDragOver"
             @drop="onDayDrop(cell, $event)"
           >
-            <div class="day-number" color="black">{{ cell.day }}</div>
+            <div class="day-number" >{{ cell.day }}</div>
 
             <div class="day-events">
               <div
@@ -484,6 +484,7 @@ const onDayDragOver = (domEvent) => {
 .day-number {
   align-self: flex-end;
   font-size: 0.8rem;
+  color: #555;
 }
 .day-events {
   flex: 1;
