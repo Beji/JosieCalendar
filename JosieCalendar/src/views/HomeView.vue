@@ -289,7 +289,7 @@ const onDayDragOver = (domEvent) => {
       <!-- Event Bank -->
       <div class="bank" @dragover="onDayDragOver" @drop="onBankDrop">
         <div class="bank-header">
-          <h3>Event Bank</h3>
+          <h3 style="color: black">Event Bank</h3>
           <button class="add-event-btn" @click="openBankForm">+</button>
         </div>
         <div class="bank-events">
@@ -328,7 +328,7 @@ const onDayDragOver = (domEvent) => {
             @dragover="onDayDragOver"
             @drop="onDayDrop(cell, $event)"
           >
-            <div class="day-number">{{ cell.day }}</div>
+            <div class="day-number" color="black">{{ cell.day }}</div>
 
             <div class="day-events">
               <div
