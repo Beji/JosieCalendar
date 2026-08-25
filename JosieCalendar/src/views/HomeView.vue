@@ -1,8 +1,22 @@
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 
 const currentDate = ref(new Date())
 const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+
+// --- View mode (month grid vs. weekly time-grid) ---
+const viewMode = ref('month')
+const weekBodyEl = ref(null)
+
+const setViewMode = async (mode) => {
+  viewMode.value = mode
+  if (mode === 'week') {
+    await nextTick()
+    if (weekBodyEl.value) {
+      weekBodyEl.value.scrollTop = HOUR_HEIGHT * 7
+    }
+  }
+}
 
 // Get current year and month
 const year = computed(() => currentDate.value.getFullYear())
@@ -79,6 +93,96 @@ const isToday = (cell) => {
     cell.month === today.getMonth() &&
     cell.year === today.getFullYear()
   )
+}
+
+// --- Week view ---
+const HOUR_HEIGHT = 48 // px per hour in the weekly time grid
+
+const weekStart = computed(() => {
+  const d = new Date(currentDate.value)
+  d.setDate(d.getDate() - d.getDay())
+  d.setHours(0, 0, 0, 0)
+  return d
+})
+
+const weekDays = computed(() => {
+  const days = []
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(weekStart.value)
+    d.setDate(d.getDate() + i)
+    days.push({ day: d.getDate(), month: d.getMonth(), year: d.getFullYear() })
+  }
+  return days
+})
+
+const weekRangeLabel = computed(() => {
+  const start = weekStart.value
+  const end = new Date(weekStart.value)
+  end.setDate(end.getDate() + 6)
+  const startStr = start.toLocaleString('default', { month: 'short', day: 'numeric' })
+  const endStr = end.toLocaleString('default', { month: 'short', day: 'numeric', year: 'numeric' })
+  return `${startStr} – ${endStr}`
+})
+
+const prevWeek = () => {
+  const d = new Date(currentDate.value)
+  d.setDate(d.getDate() - 7)
+  currentDate.value = d
+}
+
+const nextWeek = () => {
+  const d = new Date(currentDate.value)
+  d.setDate(d.getDate() + 7)
+  currentDate.value = d
+}
+
+const goPrev = () => (viewMode.value === 'week' ? prevWeek() : prevMonth())
+const goNext = () => (viewMode.value === 'week' ? nextWeek() : nextMonth())
+const headerLabel = computed(() =>
+  viewMode.value === 'week' ? weekRangeLabel.value : `${monthName.value} ${year.value}`,
+)
+
+// --- Time helpers (24h "HH:MM" storage <-> 12h AM/PM display) ---
+const formatTimeLabel = (timeStr) => {
+  if (!timeStr) return ''
+  const [h, m] = timeStr.split(':').map(Number)
+  const period = h >= 12 ? 'PM' : 'AM'
+  const h12 = h % 12 === 0 ? 12 : h % 12
+  return `${h12}:${String(m).padStart(2, '0')} ${period}`
+}
+
+const hourLabel = (hour) => {
+  const period = hour >= 12 ? 'PM' : 'AM'
+  const h12 = hour % 12 === 0 ? 12 : hour % 12
+  return `${h12} ${period}`
+}
+
+const timeToMinutes = (timeStr) => {
+  if (!timeStr) return null
+  const [h, m] = timeStr.split(':').map(Number)
+  return h * 60 + m
+}
+
+const minutesToTime = (mins) => {
+  const clamped = Math.max(0, Math.min(24 * 60 - 1, Math.round(mins)))
+  const h = Math.floor(clamped / 60)
+  const m = clamped % 60
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+}
+
+const timedEventsForDay = (cell) => eventsForDay(cell).filter((e) => e.start)
+const allDayEventsForDay = (cell) => eventsForDay(cell).filter((e) => !e.start)
+
+const eventBlockStyle = (event) => {
+  const startMin = timeToMinutes(event.start) ?? 0
+  const endMin = event.end ? timeToMinutes(event.end) : startMin + 30
+  const top = (startMin / 60) * HOUR_HEIGHT
+  const height = Math.max(((endMin - startMin) / 60) * HOUR_HEIGHT, 18)
+  return {
+    top: `${top}px`,
+    height: `${height}px`,
+    background: event.color || DEFAULT_COLOR,
+  }
 }
 
 // --- Events (persisted to localStorage so state survives app restarts) ---
@@ -247,15 +351,29 @@ const deleteContextMenuEvent = () => {
 }
 
 // --- Drag and drop ---
+// Drag payload carries the event id plus where within the block it was grabbed,
+// so dropping onto the week time-grid can position the event under the cursor.
 const onEventDragStart = (event, domEvent) => {
   domEvent.dataTransfer.effectAllowed = 'move'
-  domEvent.dataTransfer.setData('text/plain', String(event.id))
+  domEvent.dataTransfer.setData(
+    'text/plain',
+    JSON.stringify({ id: event.id, grabOffsetY: domEvent.offsetY || 0 }),
+  )
+}
+
+const getDragPayload = (domEvent) => {
+  try {
+    return JSON.parse(domEvent.dataTransfer.getData('text/plain'))
+  } catch {
+    return null
+  }
 }
 
 const onDayDrop = (cell, domEvent) => {
   domEvent.preventDefault()
-  const id = Number(domEvent.dataTransfer.getData('text/plain'))
-  const event = events.value.find((e) => e.id === id)
+  const payload = getDragPayload(domEvent)
+  if (!payload) return
+  const event = events.value.find((e) => e.id === payload.id)
   if (event) {
     event.date = dateKey(cell.year, cell.month, cell.day)
   }
@@ -263,8 +381,9 @@ const onDayDrop = (cell, domEvent) => {
 
 const onBankDrop = (domEvent) => {
   domEvent.preventDefault()
-  const id = Number(domEvent.dataTransfer.getData('text/plain'))
-  const event = events.value.find((e) => e.id === id)
+  const payload = getDragPayload(domEvent)
+  if (!payload) return
+  const event = events.value.find((e) => e.id === payload.id)
   if (event) {
     event.date = null
   }
@@ -274,15 +393,57 @@ const onDayDragOver = (domEvent) => {
   domEvent.preventDefault()
   domEvent.dataTransfer.dropEffect = 'move'
 }
+
+// Dropping in the week time-grid: the drop Y position (adjusted for where the
+// event was grabbed) sets its new start time, snapped to 15-minute increments,
+// while preserving its duration. Dropping on a different day's column also
+// moves it to that day.
+const onWeekColumnDrop = (cell, domEvent) => {
+  domEvent.preventDefault()
+  const payload = getDragPayload(domEvent)
+  if (!payload) return
+  const event = events.value.find((e) => e.id === payload.id)
+  if (!event) return
+
+  const rect = domEvent.currentTarget.getBoundingClientRect()
+  const offsetY = domEvent.clientY - rect.top - (payload.grabOffsetY || 0)
+  const rawMinutes = (offsetY / HOUR_HEIGHT) * 60
+  const snapped = Math.round(rawMinutes / 15) * 15
+
+  const startMin = timeToMinutes(event.start)
+  const endMin = timeToMinutes(event.end)
+  const duration = startMin !== null && endMin !== null ? endMin - startMin : 30
+
+  const clampedStart = Math.max(0, Math.min(24 * 60 - duration, snapped))
+  event.date = dateKey(cell.year, cell.month, cell.day)
+  event.start = minutesToTime(clampedStart)
+  event.end = minutesToTime(clampedStart + duration)
+}
+
+// Dropping on the all-day strip clears the time, moving the event out of the hourly grid.
+const onAllDayDrop = (cell, domEvent) => {
+  domEvent.preventDefault()
+  const payload = getDragPayload(domEvent)
+  if (!payload) return
+  const event = events.value.find((e) => e.id === payload.id)
+  if (!event) return
+  event.date = dateKey(cell.year, cell.month, cell.day)
+  event.start = ''
+  event.end = ''
+}
 </script>
 
 <template>
   <div class="calendar">
     <!-- Header -->
     <div class="header">
-      <button @click="prevMonth">&lt;</button>
-      <h2>{{ monthName }} {{ year }}</h2>
-      <button @click="nextMonth">&gt;</button>
+      <button @click="goPrev">&lt;</button>
+      <h2>{{ headerLabel }}</h2>
+      <button @click="goNext">&gt;</button>
+      <div class="view-toggle">
+        <button :class="{ active: viewMode === 'month' }" @click="setViewMode('month')">Month</button>
+        <button :class="{ active: viewMode === 'week' }" @click="setViewMode('week')">Week</button>
+      </div>
     </div>
 
     <div class="body">
@@ -305,7 +466,7 @@ const onDayDragOver = (domEvent) => {
           >
             <div class="event-title">{{ event.title }}</div>
             <div v-if="event.start || event.end" class="event-time">
-              {{ event.start }}<span v-if="event.start && event.end"> - </span>{{ event.end }}
+              {{ formatTimeLabel(event.start) }}<span v-if="event.start && event.end"> - </span>{{ formatTimeLabel(event.end) }}
             </div>
           </div>
         </div>
@@ -313,26 +474,75 @@ const onDayDragOver = (domEvent) => {
 
       <!-- Main Calendar -->
       <div class="main">
-        <!-- Weekday Labels -->
-        <div class="weekdays">
-          <div v-for="day in weekdays" :key="day" class="weekday">{{ day }}</div>
-        </div>
+        <!-- Month Grid View -->
+        <template v-if="viewMode === 'month'">
+          <!-- Weekday Labels -->
+          <div class="weekdays">
+            <div v-for="day in weekdays" :key="day" class="weekday">{{ day }}</div>
+          </div>
 
-        <!-- Date Grid -->
-        <div class="grid">
-          <div
-            v-for="cell in calendarCells"
-            :key="`${cell.year}-${cell.month}-${cell.day}`"
-            class="day"
-            :class="{ today: isToday(cell), outside: !cell.inCurrentMonth }"
-            @dragover="onDayDragOver"
-            @drop="onDayDrop(cell, $event)"
-          >
-            <div class="day-number" >{{ cell.day }}</div>
+          <!-- Date Grid -->
+          <div class="grid">
+            <div
+              v-for="cell in calendarCells"
+              :key="`${cell.year}-${cell.month}-${cell.day}`"
+              class="day"
+              :class="{ today: isToday(cell), outside: !cell.inCurrentMonth }"
+              @dragover="onDayDragOver"
+              @drop="onDayDrop(cell, $event)"
+            >
+              <div class="day-number" >{{ cell.day }}</div>
 
-            <div class="day-events">
+              <div class="day-events">
+                <div
+                  v-for="event in eventsForDay(cell)"
+                  :key="event.id"
+                  class="event-item"
+                  :style="{ background: event.color || '#3182ce' }"
+                  draggable="true"
+                  @dragstart="onEventDragStart(event, $event)"
+                  @click="openEditForm(event)"
+                  @contextmenu="openContextMenu(event, $event)"
+                >
+                  <div class="event-title">{{ event.title }}</div>
+                  <div v-if="event.start || event.end" class="event-time">
+                    {{ formatTimeLabel(event.start) }}<span v-if="event.start && event.end"> - </span>{{ formatTimeLabel(event.end) }}
+                  </div>
+                </div>
+              </div>
+
+              <button class="add-event-btn" @click="openCreateForm(cell)">+</button>
+            </div>
+          </div>
+        </template>
+
+        <!-- Weekly Time-Grid View -->
+        <div v-else class="week-view">
+          <div class="week-header-row">
+            <div class="week-gutter-spacer"></div>
+            <div
+              v-for="(cell, index) in weekDays"
+              :key="`h-${cell.year}-${cell.month}-${cell.day}`"
+              class="week-day-header"
+              :class="{ today: isToday(cell) }"
+            >
+              <span class="week-day-name">{{ weekdays[index] }}</span>
+              <span class="week-day-number">{{ cell.day }}</span>
+              <button class="add-event-btn" @click="openCreateForm(cell)">+</button>
+            </div>
+          </div>
+
+          <div class="week-allday-row">
+            <div class="week-gutter-spacer week-allday-label">All-day</div>
+            <div
+              v-for="cell in weekDays"
+              :key="`a-${cell.year}-${cell.month}-${cell.day}`"
+              class="week-allday-cell"
+              @dragover="onDayDragOver"
+              @drop="onAllDayDrop(cell, $event)"
+            >
               <div
-                v-for="event in eventsForDay(cell)"
+                v-for="event in allDayEventsForDay(cell)"
                 :key="event.id"
                 class="event-item"
                 :style="{ background: event.color || '#3182ce' }"
@@ -342,13 +552,53 @@ const onDayDragOver = (domEvent) => {
                 @contextmenu="openContextMenu(event, $event)"
               >
                 <div class="event-title">{{ event.title }}</div>
-                <div v-if="event.start || event.end" class="event-time">
-                  {{ event.start }}<span v-if="event.start && event.end"> - </span>{{ event.end }}
+              </div>
+            </div>
+          </div>
+
+          <div class="week-body" ref="weekBodyEl">
+            <div class="week-gutter">
+              <div
+                v-for="hour in 24"
+                :key="hour"
+                class="hour-label"
+                :style="{ height: HOUR_HEIGHT + 'px' }"
+              >
+                {{ hourLabel(hour - 1) }}
+              </div>
+            </div>
+            <div class="week-grid">
+              <div
+                v-for="cell in weekDays"
+                :key="`g-${cell.year}-${cell.month}-${cell.day}`"
+                class="week-day-column"
+                :style="{ height: HOUR_HEIGHT * 24 + 'px' }"
+                @dragover="onDayDragOver"
+                @drop="onWeekColumnDrop(cell, $event)"
+              >
+                <div
+                  v-for="hour in 24"
+                  :key="hour"
+                  class="hour-line"
+                  :style="{ top: HOUR_HEIGHT * (hour - 1) + 'px' }"
+                ></div>
+                <div
+                  v-for="event in timedEventsForDay(cell)"
+                  :key="event.id"
+                  class="week-event"
+                  :style="eventBlockStyle(event)"
+                  draggable="true"
+                  @dragstart="onEventDragStart(event, $event)"
+                  @click="openEditForm(event)"
+                  @contextmenu="openContextMenu(event, $event)"
+                >
+                  <div class="event-title">{{ event.title }}</div>
+                  <div class="event-time">
+                    {{ formatTimeLabel(event.start) }}<span v-if="event.end"> - {{ formatTimeLabel(event.end) }}</span>
+                  </div>
                 </div>
               </div>
             </div>
-
-            <button class="add-event-btn" @click="openCreateForm(cell)">+</button>
           </div>
         </div>
       </div>
@@ -412,6 +662,28 @@ const onDayDragOver = (domEvent) => {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 1rem;
+  gap: 0.75rem;
+}
+.header h2 {
+  flex: 1;
+  text-align: center;
+}
+.view-toggle {
+  display: flex;
+  gap: 4px;
+}
+.view-toggle button {
+  padding: 4px 10px;
+  border: 1px solid #ccc;
+  background: white;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+.view-toggle button.active {
+  background: #3182ce;
+  color: white;
+  border-color: #3182ce;
 }
 .body {
   flex: 1;
@@ -592,5 +864,114 @@ const onDayDragOver = (domEvent) => {
 }
 .context-menu button:hover {
   background: #f4f4f4;
+}
+
+/* --- Weekly time-grid view --- */
+.week-view {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.week-header-row {
+  display: flex;
+}
+.week-gutter-spacer {
+  width: 52px;
+  flex-shrink: 0;
+}
+.week-day-header {
+  flex: 1;
+  position: relative;
+  text-align: center;
+  padding: 4px 0 6px;
+  border-radius: 4px;
+}
+.week-day-header.today {
+  background: #d6e9ff;
+  font-weight: bold;
+}
+.week-day-name {
+  display: block;
+  font-size: 0.7rem;
+  color: #666;
+}
+.week-day-number {
+  display: block;
+  font-size: 1rem;
+}
+.week-day-header .add-event-btn {
+  position: absolute;
+  top: 0;
+  right: 2px;
+}
+.week-allday-row {
+  display: flex;
+  min-height: 26px;
+  border-top: 1px solid #ddd;
+  border-bottom: 1px solid #ddd;
+  padding: 2px 0;
+}
+.week-allday-label {
+  font-size: 0.65rem;
+  color: #888;
+  padding-top: 4px;
+  text-align: right;
+  padding-right: 6px;
+  box-sizing: border-box;
+}
+.week-allday-cell {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 3px;
+  border-left: 1px solid #eee;
+}
+.week-body {
+  flex: 1;
+  display: flex;
+  overflow-y: auto;
+  min-height: 0;
+}
+.week-gutter {
+  width: 52px;
+  flex-shrink: 0;
+}
+.hour-label {
+  font-size: 0.65rem;
+  color: #888;
+  text-align: right;
+  padding-right: 6px;
+  padding-top: 2px;
+  box-sizing: border-box;
+}
+.week-grid {
+  flex: 1;
+  display: flex;
+  position: relative;
+}
+.week-day-column {
+  flex: 1;
+  position: relative;
+  border-left: 1px solid #eee;
+}
+.hour-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-top: 1px solid #eee;
+}
+.week-event {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  color: white;
+  border-radius: 3px;
+  padding: 2px 4px;
+  font-size: 0.7rem;
+  overflow: hidden;
+  cursor: grab;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
 }
 </style>
