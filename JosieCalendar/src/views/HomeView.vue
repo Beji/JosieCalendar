@@ -1006,19 +1006,23 @@ const onAllDayDrop = (cell, domEvent) => {
   background: #eef2f7;
   border-radius: 4px;
   padding: 8px;
-  overflow-y: auto;
+  min-height: 0;
 }
 .bank-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   margin-bottom: 8px;
+  flex-shrink: 0;
 }
 .bank-header h3 {
   font-size: 0.9rem;
   margin: 0;
 }
 .bank-events {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 4px;
