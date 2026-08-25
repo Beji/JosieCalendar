@@ -219,6 +219,9 @@ const eventsByDay = computed(() => {
     if (!map[event.date]) map[event.date] = []
     map[event.date].push(event)
   }
+  for (const day of Object.values(map)) {
+    day.sort((a, b) => (a.start || '').localeCompare(b.start || ''))
+  }
   return map
 })
 
@@ -230,6 +233,37 @@ const eventsForDay = (cell) => {
 const bankEvents = computed(() => {
   return events.value.filter((event) => !event.date)
 })
+
+// --- Recently used colors (so the picker can offer quick reuse) ---
+const RECENT_COLORS_KEY = 'josiecalendar.recentColors'
+const MAX_RECENT_COLORS = 8
+
+const loadRecentColors = () => {
+  try {
+    const raw = localStorage.getItem(RECENT_COLORS_KEY)
+    const parsed = raw ? JSON.parse(raw) : []
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+const recentColors = ref(loadRecentColors())
+
+watch(
+  recentColors,
+  (value) => {
+    localStorage.setItem(RECENT_COLORS_KEY, JSON.stringify(value))
+  },
+  { deep: true },
+)
+
+const trackRecentColor = (color) => {
+  if (!color) return
+  const filtered = recentColors.value.filter((c) => c !== color)
+  filtered.unshift(color)
+  recentColors.value = filtered.slice(0, MAX_RECENT_COLORS)
+}
 
 // --- Create / edit event form ---
 const DEFAULT_COLOR = '#3182ce'
@@ -297,6 +331,8 @@ const closeForm = () => {
 const saveEvent = () => {
   if (!formTitle.value.trim()) return
 
+  trackRecentColor(formColor.value)
+
   if (formEditingId.value !== null) {
     const event = events.value.find((e) => e.id === formEditingId.value)
     if (event) {
@@ -332,6 +368,177 @@ const saveEvent = () => {
 const deleteEvent = (id) => {
   events.value = events.value.filter((e) => e.id !== id)
 }
+
+// --- Recurring meetings ---
+// A recurring meeting is a rule (title/color/time + weekdays + date range).
+// Saving it stamps out concrete events across that range, each tagged with
+// recurringId. Editing a rule regenerates its events from scratch, so
+// per-instance edits to a generated occurrence don't survive a rule edit.
+const RECURRING_STORAGE_KEY = 'josiecalendar.recurring'
+
+const loadRecurring = () => {
+  try {
+    const raw = localStorage.getItem(RECURRING_STORAGE_KEY)
+    const parsed = raw ? JSON.parse(raw) : []
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+const recurringMeetings = ref(loadRecurring())
+let nextRecurringId = recurringMeetings.value.reduce((max, r) => Math.max(max, r.id), 0) + 1
+
+watch(
+  recurringMeetings,
+  (value) => {
+    localStorage.setItem(RECURRING_STORAGE_KEY, JSON.stringify(value))
+  },
+  { deep: true },
+)
+
+const toDateInputValue = (d) => {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+const defaultRecurringRangeStart = () => toDateInputValue(new Date())
+const defaultRecurringRangeEnd = () => {
+  const d = new Date()
+  d.setFullYear(d.getFullYear() + 1)
+  return toDateInputValue(d)
+}
+
+const generateRecurringEvents = (rule) => {
+  const generated = []
+  const cursor = new Date(rule.rangeStart + 'T00:00:00')
+  const end = new Date(rule.rangeEnd + 'T00:00:00')
+  while (cursor <= end) {
+    if (rule.days.includes(cursor.getDay())) {
+      generated.push({
+        id: nextEventId++,
+        title: rule.title,
+        date: dateKey(cursor.getFullYear(), cursor.getMonth(), cursor.getDate()),
+        start: rule.start,
+        end: rule.end,
+        color: rule.color,
+        recurringId: rule.id,
+      })
+    }
+    cursor.setDate(cursor.getDate() + 1)
+  }
+  return generated
+}
+
+const removeRecurringEvents = (recurringId) => {
+  events.value = events.value.filter((e) => e.recurringId !== recurringId)
+}
+
+const showRecurringPanel = ref(false)
+const showRecurringForm = ref(false)
+const recurringEditingId = ref(null)
+const recurringTitle = ref('')
+const recurringColor = ref(DEFAULT_COLOR)
+const recurringDays = ref([])
+const recurringStart = ref('')
+const recurringEnd = ref('')
+const recurringRangeStart = ref('')
+const recurringRangeEnd = ref('')
+
+const openRecurringPanel = () => {
+  showRecurringPanel.value = true
+}
+
+const closeRecurringPanel = () => {
+  showRecurringPanel.value = false
+}
+
+const resetRecurringFormFields = () => {
+  recurringTitle.value = ''
+  recurringColor.value = DEFAULT_COLOR
+  recurringDays.value = []
+  recurringStart.value = ''
+  recurringEnd.value = ''
+  recurringRangeStart.value = defaultRecurringRangeStart()
+  recurringRangeEnd.value = defaultRecurringRangeEnd()
+}
+
+const openNewRecurringForm = () => {
+  recurringEditingId.value = null
+  resetRecurringFormFields()
+  showRecurringForm.value = true
+}
+
+const openEditRecurringForm = (rule) => {
+  recurringEditingId.value = rule.id
+  recurringTitle.value = rule.title
+  recurringColor.value = rule.color
+  recurringDays.value = [...rule.days]
+  recurringStart.value = rule.start
+  recurringEnd.value = rule.end
+  recurringRangeStart.value = rule.rangeStart
+  recurringRangeEnd.value = rule.rangeEnd
+  showRecurringForm.value = true
+}
+
+const closeRecurringForm = () => {
+  showRecurringForm.value = false
+  recurringEditingId.value = null
+}
+
+const toggleRecurringDay = (dayIndex) => {
+  const idx = recurringDays.value.indexOf(dayIndex)
+  if (idx === -1) recurringDays.value.push(dayIndex)
+  else recurringDays.value.splice(idx, 1)
+}
+
+const saveRecurringMeeting = () => {
+  if (!recurringTitle.value.trim()) return
+  if (recurringDays.value.length === 0) return
+  if (!recurringStart.value || !recurringRangeStart.value || !recurringRangeEnd.value) return
+
+  trackRecentColor(recurringColor.value)
+
+  if (recurringEditingId.value !== null) {
+    const rule = recurringMeetings.value.find((r) => r.id === recurringEditingId.value)
+    if (!rule) return
+    rule.title = recurringTitle.value.trim()
+    rule.color = recurringColor.value
+    rule.days = [...recurringDays.value].sort()
+    rule.start = recurringStart.value
+    rule.end = recurringEnd.value
+    rule.rangeStart = recurringRangeStart.value
+    rule.rangeEnd = recurringRangeEnd.value
+
+    removeRecurringEvents(rule.id)
+    events.value.push(...generateRecurringEvents(rule))
+    closeRecurringForm()
+    return
+  }
+
+  const rule = {
+    id: nextRecurringId++,
+    title: recurringTitle.value.trim(),
+    color: recurringColor.value,
+    days: [...recurringDays.value].sort(),
+    start: recurringStart.value,
+    end: recurringEnd.value,
+    rangeStart: recurringRangeStart.value,
+    rangeEnd: recurringRangeEnd.value,
+  }
+  recurringMeetings.value.push(rule)
+  events.value.push(...generateRecurringEvents(rule))
+  closeRecurringForm()
+}
+
+const deleteRecurringMeeting = (id) => {
+  removeRecurringEvents(id)
+  recurringMeetings.value = recurringMeetings.value.filter((r) => r.id !== id)
+}
+
+const recurringDaysLabel = (rule) => rule.days.map((d) => weekdays[d]).join('/')
 
 // --- Right-click context menu ---
 const contextMenu = ref({ visible: false, x: 0, y: 0, eventId: null })
@@ -440,6 +647,7 @@ const onAllDayDrop = (cell, domEvent) => {
       <button @click="goPrev">&lt;</button>
       <h2>{{ headerLabel }}</h2>
       <button @click="goNext">&gt;</button>
+      <button class="recurring-toggle-btn" @click="openRecurringPanel">Recurring Meetings</button>
       <div class="view-toggle">
         <button :class="{ active: viewMode === 'month' }" @click="setViewMode('month')">Month</button>
         <button :class="{ active: viewMode === 'week' }" @click="setViewMode('week')">Week</button>
@@ -621,6 +829,16 @@ const onAllDayDrop = (cell, domEvent) => {
           Color
           <input type="color" v-model="formColor" class="color-input" />
         </label>
+        <div v-if="recentColors.length" class="recent-colors">
+          <button
+            v-for="c in recentColors"
+            :key="c"
+            class="recent-color-swatch"
+            :class="{ selected: c === formColor }"
+            :style="{ background: c }"
+            @click="formColor = c"
+          ></button>
+        </div>
         <input type="time" v-model="formStart" class="form-control" placeholder="Start time" />
         <input type="time" v-model="formEnd" class="form-control" placeholder="End time" />
         <label v-if="formIsBank && formEditingId === null" class="quantity-field">
@@ -630,6 +848,87 @@ const onAllDayDrop = (cell, domEvent) => {
         <div class="modal-actions">
           <button @click="closeForm">Cancel</button>
           <button @click="saveEvent">{{ formEditingId !== null ? 'Save Changes' : 'Create Event' }}</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Recurring Meetings Panel -->
+    <div v-if="showRecurringPanel" class="modal-overlay" @click.self="closeRecurringPanel">
+      <div class="modal recurring-panel">
+        <div class="recurring-panel-header">
+          <h3>Recurring Meetings</h3>
+          <button class="add-event-btn" @click="openNewRecurringForm">+</button>
+        </div>
+        <div v-if="recurringMeetings.length === 0" class="recurring-empty">No recurring meetings yet.</div>
+        <div v-for="rule in recurringMeetings" :key="rule.id" class="recurring-item">
+          <span class="recurring-color-dot" :style="{ background: rule.color }"></span>
+          <div class="recurring-item-info">
+            <div class="recurring-item-title">{{ rule.title }}</div>
+            <div class="recurring-item-meta">
+              {{ recurringDaysLabel(rule) }} &middot; {{ formatTimeLabel(rule.start)
+              }}<span v-if="rule.end"> - {{ formatTimeLabel(rule.end) }}</span>
+            </div>
+          </div>
+          <button class="recurring-item-edit" @click="openEditRecurringForm(rule)">Edit</button>
+          <button class="recurring-item-delete" @click="deleteRecurringMeeting(rule.id)">Delete</button>
+        </div>
+        <div class="modal-actions">
+          <button @click="closeRecurringPanel">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Recurring Meeting Create / Edit Form -->
+    <div v-if="showRecurringForm" class="modal-overlay" @click.self="closeRecurringForm">
+      <div class="modal">
+        <h3>{{ recurringEditingId !== null ? 'Edit Recurring Meeting' : 'New Recurring Meeting' }}</h3>
+        <input
+          type="text"
+          v-model="recurringTitle"
+          class="form-control"
+          placeholder="Enter meeting title"
+          @keyup.enter="saveRecurringMeeting"
+        />
+        <label class="color-field">
+          Color
+          <input type="color" v-model="recurringColor" class="color-input" />
+        </label>
+        <div v-if="recentColors.length" class="recent-colors">
+          <button
+            v-for="c in recentColors"
+            :key="c"
+            class="recent-color-swatch"
+            :class="{ selected: c === recurringColor }"
+            :style="{ background: c }"
+            @click="recurringColor = c"
+          ></button>
+        </div>
+        <div class="weekday-picker">
+          <button
+            v-for="(d, index) in weekdays"
+            :key="d"
+            class="weekday-toggle"
+            :class="{ active: recurringDays.includes(index) }"
+            @click="toggleRecurringDay(index)"
+          >
+            {{ d }}
+          </button>
+        </div>
+        <input type="time" v-model="recurringStart" class="form-control" placeholder="Start time" />
+        <input type="time" v-model="recurringEnd" class="form-control" placeholder="End time" />
+        <label class="range-field">
+          From
+          <input type="date" v-model="recurringRangeStart" class="form-control" />
+        </label>
+        <label class="range-field">
+          Until
+          <input type="date" v-model="recurringRangeEnd" class="form-control" />
+        </label>
+        <div class="modal-actions">
+          <button @click="closeRecurringForm">Cancel</button>
+          <button @click="saveRecurringMeeting">
+            {{ recurringEditingId !== null ? 'Save Changes' : 'Create' }}
+          </button>
         </div>
       </div>
     </div>
@@ -684,6 +983,14 @@ const onAllDayDrop = (cell, domEvent) => {
   background: #3182ce;
   color: white;
   border-color: #3182ce;
+}
+.recurring-toggle-btn {
+  padding: 4px 10px;
+  border: 1px solid #ccc;
+  background: white;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
 }
 .body {
   flex: 1;
@@ -830,6 +1137,103 @@ const onAllDayDrop = (cell, domEvent) => {
 }
 .quantity-field .form-control {
   width: 70px;
+}
+.recent-colors {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.recent-color-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+}
+.recent-color-swatch.selected {
+  border-color: #222;
+}
+.weekday-picker {
+  display: flex;
+  gap: 4px;
+  justify-content: space-between;
+}
+.weekday-toggle {
+  flex: 1;
+  padding: 6px 0;
+  border: 1px solid #ccc;
+  background: white;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.75rem;
+}
+.weekday-toggle.active {
+  background: #3182ce;
+  color: white;
+  border-color: #3182ce;
+}
+.range-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  gap: 0.5rem;
+}
+.range-field .form-control {
+  flex: 1;
+  margin-left: 0.5rem;
+}
+.recurring-panel {
+  width: 360px;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+.recurring-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.recurring-empty {
+  font-size: 0.85rem;
+  color: #888;
+  padding: 8px 0;
+}
+.recurring-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid #eee;
+}
+.recurring-color-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.recurring-item-info {
+  flex: 1;
+  min-width: 0;
+}
+.recurring-item-title {
+  font-size: 0.85rem;
+  font-weight: bold;
+}
+.recurring-item-meta {
+  font-size: 0.7rem;
+  color: #666;
+}
+.recurring-item-edit,
+.recurring-item-delete {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 2px 6px;
+}
+.recurring-item-delete {
+  color: #c0392b;
 }
 .modal-actions {
   display: flex;
